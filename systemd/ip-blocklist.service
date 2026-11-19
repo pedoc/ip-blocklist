@@ -1,0 +1,11 @@
+[Unit]
+Description=Sync public attacker IP blocklist into ipset
+Documentation=https://github.com/pedoc/ip-blocklist
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sync-blocklist.sh
+# Keep going on a failed refresh; the previous set stays in the kernel.
+SuccessExitStatus=0

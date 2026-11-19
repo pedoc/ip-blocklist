@@ -26,4 +26,11 @@ jobs:
 
       - name: systemd units parse
         run: |
-          systemd-analyze verify systemd/ip-blocklist.service systemd/ip-blocklist.timer
+          set -eu
+          # Verify unit syntax only. The ExecStart path is created by install.sh,
+          # so point a copy at an executable that exists on the CI runner.
+          tmp=$(mktemp -d)
+          for unit in systemd/ip-blocklist.service systemd/ip-blocklist.timer; do
+            sed 's#^ExecStart=.*#ExecStart=/bin/true#' "$unit" > "$tmp/$(basename "$unit")"
+          done
+          systemd-analyze verify "$tmp"/*.service "$tmp"/*.timer

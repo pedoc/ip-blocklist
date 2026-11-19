@@ -16,6 +16,7 @@ is no risk of inheriting someone else's stale or over-broad ranges.
 | [`blocklist.json`](blocklist.json) | Same addresses plus `first_seen`, `last_seen`, `hits`, `category`. |
 | [`scripts/sync-blocklist.sh`](scripts/sync-blocklist.sh) | Download the list and load it into an ipset. Idempotent. |
 | [`scripts/apply-nftables.sh`](scripts/apply-nftables.sh) | Same, for nftables: builds a dedicated table and drop rule. |
+| [`scripts/geo-allowlist.sh`](scripts/geo-allowlist.sh) | Opposite direction: restrict chosen ports to one country (default CN). |
 | [`install.sh`](install.sh) | Install the ipset script plus an hourly systemd timer. |
 
 ### Choosing a source URL
@@ -117,6 +118,44 @@ done < blocklist.txt
 
 That writes into fail2ban's database and is re-applied on restart; the ipset
 route needs no database at all.
+
+### Country allowlist (opposite direction)
+
+Denying known attackers is one approach; the other is refusing the rest of the
+world on ports nobody legitimate should reach. [`scripts/geo-allowlist.sh`](scripts/geo-allowlist.sh)
+does the latter for a country's address space, defaulting to mainland China.
+
+```sh
+sudo ./scripts/geo-allowlist.sh --dry-run          # report only, changes nothing
+sudo ./scripts/geo-allowlist.sh --check 1.2.3.4    # is this address in the set?
+sudo ./scripts/geo-allowlist.sh --ports "30003"    # apply to one port
+sudo ./scripts/geo-allowlist.sh --remove           # roll back
+```
+
+It builds `cn_ipv4` (from the daily-updated [17mon list](https://github.com/17mon/china_ip_list)),
+plus `geo_trusted` read from `/etc/geo-allowlist.trusted`, and inserts a chain
+ahead of the fail2ban chains:
+
+```
+geo_trusted  -> RETURN      # always allowed, wins over everything
+cn_ipv4      -> RETURN      # allowed
+otherwise    -> DROP
+```
+
+Design notes that matter in production:
+
+- **The trusted file is the escape hatch.** It is checked first, so a bad or
+  truncated country list cannot lock out the addresses listed there.
+- **A failed download changes nothing**; a list that shrinks by more than half
+  against the previous run is rejected outright.
+- **Port 22 is never touched** by the script. Keep a management path outside
+  the restricted ports — that is what makes the restriction safe to try.
+- Because the chain sits before the jails, foreign traffic stops generating
+  ban notifications; mainland traffic still reaches fail2ban as before.
+
+Caveats: country lists lag real allocations by days, and cloud/VPS ranges are
+reassigned often. Mobile roaming and VPN exits make your own source address
+look foreign, so keep the trusted file current.
 
 ### Anything else
 

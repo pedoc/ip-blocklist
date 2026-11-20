@@ -1,0 +1,53 @@
+#!/bin/sh
+# Rebuild the permanent IPv4 blocklist ipset and ensure the INPUT drop rule.
+# Idempotent; safe to run at boot, on demand, and from fail2ban actions.
+#
+# Reads two files: the curated list maintained by hand, and the auto list
+# appended by permban-on-repeat. Entries are validated and deduplicated before
+# the set is touched, so one malformed line cannot wipe a working blocklist.
+set -eu
+
+SET=permban4
+LISTS="/etc/permban4.list /etc/permban4-auto.list"
+
+tmp=$(mktemp) || exit 1
+trap 'rm -f "$tmp"' EXIT INT TERM
+
+# Emit only valid bare IPv4 addresses; comments and whitespace are stripped.
+extract() {
+    awk '
+        {
+            sub(/#.*/, ""); gsub(/[ \t\r]/, "")
+            if ($0 == "") next
+            n = split($0, o, ".")
+            if (n != 4) next
+            for (i = 1; i <= 4; i++) if (o[i] !~ /^[0-9]+$/ || o[i] > 255) next
+            print $0
+        }
+    ' "$1"
+}
+
+for list in $LISTS; do
+    [ -f "$list" ] || continue
+    extract "$list" >> "$tmp"
+done
+
+count=$(sort -u "$tmp" | wc -l | tr -d ' ')
+if [ "$count" -eq 0 ]; then
+    echo "permban4-sync: no valid entries in $LISTS; refusing to flush $SET" >&2
+    exit 1
+fi
+
+ipset create "$SET" hash:ip family inet -exist
+ipset flush "$SET"
+
+sort -u "$tmp" | while read -r ip; do
+    [ -n "$ip" ] || continue
+    ipset add "$SET" "$ip" -exist
+done
+
+if ! iptables -C INPUT -m set --match-set "$SET" src -j DROP 2>/dev/null; then
+    iptables -I INPUT 1 -m set --match-set "$SET" src -j DROP
+fi
+
+echo "permban4-sync: $count entries loaded into $SET" >&2

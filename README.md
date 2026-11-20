@@ -119,6 +119,52 @@ done < blocklist.txt
 That writes into fail2ban's database and is re-applied on restart; the ipset
 route needs no database at all.
 
+### Automatic escalation: permaban on the second ban
+
+Maintaining the list by hand means a scanner keeps coming back until somebody
+reads the mail. [`server/permban-on-repeat.sh`](server/permban-on-repeat.sh)
+closes that loop: when fail2ban bans the same address a second time, the address
+is appended to a separate auto list and the blocklist is rebuilt.
+
+```sh
+sudo install -m 0755 server/permban-on-repeat.sh /usr/local/libexec/
+sudo install -m 0644 server/permban-on-repeat.conf /etc/fail2ban/action.d/
+# then add "permban-on-repeat" to the jail's action list
+```
+
+| File | Role |
+|---|---|
+| `server/permban-on-repeat.sh` | Decides and appends; also calls the sync script |
+| `server/permban-on-repeat.conf` | fail2ban action wrapper |
+| `server/permban4-sync` | Rebuilds the ipset from both lists |
+
+Two lists, deliberately kept apart:
+
+- `/etc/permban4.list` — curated by hand, reviewed.
+- `/etc/permban4-auto.list` — appended by the script, one line per escalation.
+
+Keeping them separate means a bad automatic decision never pollutes the curated
+list, and undoing one is `sed -i '/<ip>/d'` on the auto file followed by a sync.
+
+**The threshold is ban count, not failure count.** `<bancount>` cannot be used
+for this: fail2ban increments an address's counter in its observer *after* the
+ban action runs, so on 1.0.2 the tag reads `1` on every fresh ticket — measured
+across five consecutive bans of one address. The script therefore reads the
+recorded history from `/var/lib/fail2ban/fail2ban.sqlite3` after a short wait,
+which is deterministic. If the history is unreadable it declines to escalate
+rather than guessing.
+
+Safety rails, all covered by the script's own checks:
+
+- Non-routable ranges (RFC 1918, loopback, link-local) are never permabanned.
+- `/etc/permban4-auto.ignore` is checked first, so the address you use to get
+  back in can be excluded even if it somehow trips a ban.
+- Addresses already on either list are skipped, and a lock keeps two jails from
+  racing on the same address.
+- The action sets `norestored = true`: fail2ban re-runs ban actions for bans it
+  restores on restart, and those are not new offences. Without it every restart
+  could permanently block addresses banned only once.
+
 ### Country allowlist (opposite direction)
 
 Denying known attackers is one approach; the other is refusing the rest of the
